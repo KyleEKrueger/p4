@@ -1,0 +1,3 @@
+/home/kylekrueger/CLionProjects/p4/cmake-build-debug/CMakeFiles/p4.dir
+/home/kylekrueger/CLionProjects/p4/cmake-build-debug/CMakeFiles/edit_cache.dir
+/home/kylekrueger/CLionProjects/p4/cmake-build-debug/CMakeFiles/rebuild_cache.dir

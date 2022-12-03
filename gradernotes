@@ -1,0 +1,8 @@
+There are some inconsistent behavior in my program. And there are some functionalities that were not able to be completed.
+For example, input does not change the file to arguments, but rather it opens the file and tries to run the contents as commands.
+>, cd, >&, !! should work as intended
+I wrote this code myself, however I used a few resources for reading on how functionalities of certain commands work
+
+FOR LS: https://faq.cprogramming.com/cgi-bin/smartfaq.cgi?answer=1046380353&id=1044780608
+FOR GETCWD: https://pubs.opengroup.org/onlinepubs/9699919799/functions/getcwd.html
+FOR SETPGID: https://www.tutorialspoint.com/unix_system_calls/setpgid.htm
