@@ -71,16 +71,12 @@ int pReturn; //<- What parse returns
 
 ///--FLAGS--
 int CDFLAG = 0;
-//int LASTCDFLAG = 0;
 int CDFLAGHISTORY[MAXHISTORYSIZE];
 int LSFLAG = 0;
-//int LASTLSFLAG = 0;
 int LSFLAGHISTORY[MAXHISTORYSIZE];
 int INDIRECTFLAG = 0;
-//int LASTINDIRECTFLAG = 0;
 int INDIRECTFLAGHISTORY[MAXHISTORYSIZE];
 int OUTDIRECTFLAG = 0;
-//int LASTOUTDIRECTFLAG = 0;
 int OUTDIRECTFLAGHISTORY[MAXHISTORYSIZE];
 int AMPERFLAG = 0;
 int BACKGROUNDFLAG = 0;
@@ -110,7 +106,7 @@ void resetNEWARGV() {
 void execvpFunct(int argvNum){
     ///Calls execvp, taking in a starting location as input.
     //argvNum should be 0 in any case where all of newargv should be processed. or nonzero in a pipe situation
-    if (execvp(NEWARGV[argvNum], NEWARGV) == -1) {
+    if (execvp(NEWARGV[argvNum], NEWARGV+argvNum) == -1) {
         perror("execvp failed\n");
         exit(-6);
     }
@@ -124,6 +120,7 @@ void resetFlags() {
     OUTDIRECTFLAG = 0;
     AMPERFLAG = 0;
     BACKGROUNDFLAG = 0;
+    PIPEFLAG = 0;
 }
 ///Resets current BIGSTORAGE
 void resetBIGSTORAGE() {
@@ -225,49 +222,47 @@ void redirectFile(){
 }
 ///-Pipe Process-
 void pipeFunction(){
-    pipe(filedes); // Create the pipe
+    fflush(stdout); // Flush output
 
-    //First Child
+    //Create Child
     CHK(first = fork());
-    if (0 == first){
-        //First child piping
-        //printf("First child reporting\n");
-        CHK(dup2(filedes[1],STDOUT_FILENO));
-        CHK(close(filedes[0]));
-        CHK(close(filedes[1]));
-        //First child executing commands
-        //printf("First child Should execute commands here / child pid: %d",first);
-        execvpFunct(0);
+    if (0 == first) {
+        //Create Pipe
+        if (pipe(filedes) < 0){
+            exit(-200); // Pipe failed
+        }
+        //Create Grandchild
+        CHK(second = fork());
+        if (second == 0) {
+            //Grandchild piping
 
-    }
-    //Second Child
-    CHK(second = fork());
-    if(second==0){
-        //Second child piping
-        //printf("Second Child Reporting\n");
-        CHK(dup2(filedes[0],STDIN_FILENO));
-        CHK(close(filedes[0]));
-        CHK(close(filedes[1]));
-        //Second child executing commands
-        //printf("Second child Should execute commands here / child pid: %d",second);
-        execvpFunct(PIPEFLAG);
-    }
-    //Parent code here
-    //Close the pipe
-    CHK(close(filedes[0]));
-    CHK(close(filedes[1]));
+            CHK(dup2(filedes[1], STDOUT_FILENO));
+            CHK(close(filedes[0]));
+            CHK(close(filedes[1]));
 
-    for(;;){
+            //Grandchild executing commands
+            execvpFunct(0);
+        }
+        else {
+            //Child piping
+            CHK(dup2(filedes[0], STDIN_FILENO));
+            CHK(close(filedes[0]));
+            CHK(close(filedes[1]));
+
+            //Child executing commands
+            execvpFunct(PIPEFLAG);
+        }
+
+    }else{
+        //Parent waiting for children to finish
+            for(;;){
         CHK(pid = wait(NULL));
-        if (pid == second){
+        if (pid == first){
             break;
         }
     }
-    //Parent should only be here
-    //printf("Parent is done!\n");
-    PIPEFLAG = 0;
-
-
+    }
+    //Reset Pipeflag
 }
 ///Handles CD functionality
 void cdFlagHandler(){
