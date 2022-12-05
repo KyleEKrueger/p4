@@ -32,12 +32,21 @@
  */
 #include "p2.h"
 
+
 #define BIGSTORAGESIZE  STORAGE * MAXITEM
 #define MAXHISTORYSIZE 10
-
+///-CHK Macro-
+extern int errno;
+#define CHK(x) \
+    do{if ((x) == -1) \
+        {fprintf(stderr,"In file %s, on line %d: \n",__FILE__,__LINE__); \
+               fprintf(stderr,"errno = %d\n",errno);                 \
+               exit(1); \
+               }       \
+   }while(0)
 ///--Storage Arrays--
 char *NEWARGV[MAXITEM]; //Pointers to arguments inside of bigStorage
-char *OLDARGV[MAXITEM];
+//char *OLDARGV[MAXITEM];
 char *NEWARGVHISTORY[MAXHISTORYSIZE][MAXITEM]; //Stores the history of pointers to commands related to in Bigstoragehistory
 char BIGSTORAGEHISTORY[MAXHISTORYSIZE][BIGSTORAGESIZE]; //Stores the history of commands entered by the user
 char BIGSTORAGE[BIGSTORAGESIZE]; // Stores words to individual arguments
@@ -57,6 +66,8 @@ int PROCESSEDWORDS = 0;
 int PROCESSEDWORDSHISTORY[MAXHISTORYSIZE];
 char s[STORAGE];//Will store words to be added to bigstorage
 int comNum = 0; // Identifier for which command we are on
+int pReturn; //<- What parse returns
+
 
 ///--FLAGS--
 int CDFLAG = 0;
@@ -76,8 +87,17 @@ int BACKGROUNDFLAG = 0;
 int DEBUGMODE = 0;
 int ARGPROCESSED = 0;
 int REPEATEDCOMMAND = 0;
+int PIPEFLAG = 0;
+int PIPEFLAGHISTORY[MAXHISTORYSIZE];
 
+///-Pipeline Variables-
+int filedes[2];
+pid_t first, second, pid;
 
+///-Function Identifiers-
+int parse();
+
+///Resets current NEWARGV
 void resetNEWARGV() {
     //RESETS ALL VARIABLES THAT HAVE TO DO WITH NEWARGV AND ITS OTHER DEPENDENCIES
     int i = 0;
@@ -86,7 +106,16 @@ void resetNEWARGV() {
     }
     PROCESSEDWORDS = 0;
 }
-
+///Calls execvp. argvNum determines which element in newargv to start from
+void execvpFunct(int argvNum){
+    ///Calls execvp, taking in a starting location as input.
+    //argvNum should be 0 in any case where all of newargv should be processed. or nonzero in a pipe situation
+    if (execvp(NEWARGV[argvNum], NEWARGV) == -1) {
+        perror("execvp failed\n");
+        exit(-6);
+    }
+}
+///Resets all flags to 0
 void resetFlags() {
     //resets all flags
     CDFLAG = 0;
@@ -96,7 +125,7 @@ void resetFlags() {
     AMPERFLAG = 0;
     BACKGROUNDFLAG = 0;
 }
-
+///Resets current BIGSTORAGE
 void resetBIGSTORAGE() {
     //RESETS ALL VARIABLES THAT HAVE TO DO WITH INDIVIDUAL WORD STORAGE
     int i = 0;
@@ -110,14 +139,14 @@ void resetBIGSTORAGE() {
 
     size = 0;
 }
-
+///Resets all current time storage
 void resetStorage() {
     //Master reset
     resetNEWARGV();
     resetBIGSTORAGE();
     resetFlags();
 }
-
+///Handles sigterm
 void sigHandler(int signum) {
     //Handles only sig term (15)
     if (signum == 15) {
@@ -125,7 +154,7 @@ void sigHandler(int signum) {
         exit(-1);
     } else return;
 }
-
+///Copies the passed in command's state
 void copyState(int command) {
     //Saves the current command state
     PROCESSEDWORDSHISTORY[command % MAXHISTORYSIZE] = PROCESSEDWORDS;
@@ -137,7 +166,7 @@ void copyState(int command) {
     INDIRECTFLAGHISTORY[command % MAXHISTORYSIZE] = INDIRECTFLAG;
     OUTDIRECTFLAGHISTORY[command % MAXHISTORYSIZE] = OUTDIRECTFLAG;
 }
-
+///Loads the passed in command's state
 void loadState(int command) {
     //loads the last command state
     PROCESSEDWORDS = PROCESSEDWORDSHISTORY[command % MAXHISTORYSIZE];
@@ -149,17 +178,174 @@ void loadState(int command) {
     INDIRECTFLAG = INDIRECTFLAGHISTORY[command % MAXHISTORYSIZE];
     OUTDIRECTFLAG = OUTDIRECTFLAGHISTORY[command % MAXHISTORYSIZE];
 }
-void pipeFunction(){
-    ///-Pipe Process-
-    //1. Fork a child
-    //2. Child forks grandchild
-    //3. Grandchild dup2's output to input of pipe
-    //4. Child's input dup2's to output of pipe
-    //5. Dup 2 grandchild's input
-}
+///Handles file I/O redirection
+void redirectFile(){
+    /// - File Input Redirection -
+    if (INDIRECTFLAG == 1) {
+        int file;
+        if ((file = open(INDIRECTFILE, O_RDONLY, 0777)) < 0) {
+            fprintf(stderr, "ERROR: UNABLE TO OPEN FILE %s", INDIRECTFILE);
+            exit(-2); //TODO: Renumber exits
+        }
+            //if (DEBUGMODE == 1) printf ("\nFileNum: %d",file);
+            //if (DEBUGMODE == 1) printf("\nWe should have an old stdin: %d",stdin);
+        else if (dup2(file, STDIN_FILENO) < EXIT_SUCCESS) {
+            perror("Dup2 Problem");
+            exit(-2);
+        } // Redirecting STDIN
 
+        //if (DEBUGMODE == 1) printf("\nWe should have a new stdin: %d",stdin);
+        close(file);
+        INDIRECTFLAG = 0;
+
+    ///File output redirection
+    } else if (OUTDIRECTFLAG == 1) {
+        int ofile;
+        if (access(OUTDIRECTFILE, F_OK) == 0) fprintf(stderr, "%s: File exists", OUTDIRECTFILE);
+        else if ((ofile = open(OUTDIRECTFILE, O_RDWR | O_CREAT, 0777)) < 0) {
+            fprintf(stderr, "ERROR: UNABLE TO OPEN FILE %s", OUTDIRECTFILE);
+            exit(-3);
+        } else if (dup2(ofile, STDOUT_FILENO) < 0) {
+            perror("Dup2 problem in OutDirect");
+            exit(-4);
+        }
+        if (AMPERFLAG == 1) {
+            printf("We've got a file: %s", OUTDIRECTFILE);
+            if (dup2(ofile, STDERR_FILENO) < 0) {
+                perror("Dup2 problem in err redirect");
+                exit(-5);
+            }
+        }
+        //printf("2\n");
+        close(ofile);
+        OUTDIRECTFLAG = 0;
+        AMPERFLAG = 0;
+
+    }
+}
+///-Pipe Process-
+void pipeFunction(){
+    pipe(filedes); // Create the pipe
+
+    //First Child
+    CHK(first = fork());
+    if (0 == first){
+        //First child piping
+        //printf("First child reporting\n");
+        CHK(dup2(filedes[1],STDOUT_FILENO));
+        CHK(close(filedes[0]));
+        CHK(close(filedes[1]));
+        //First child executing commands
+        //printf("First child Should execute commands here / child pid: %d",first);
+        execvpFunct(0);
+
+    }
+    //Second Child
+    CHK(second = fork());
+    if(second==0){
+        //Second child piping
+        //printf("Second Child Reporting\n");
+        CHK(dup2(filedes[0],STDIN_FILENO));
+        CHK(close(filedes[0]));
+        CHK(close(filedes[1]));
+        //Second child executing commands
+        //printf("Second child Should execute commands here / child pid: %d",second);
+        execvpFunct(PIPEFLAG);
+    }
+    //Parent code here
+    //Close the pipe
+    CHK(close(filedes[0]));
+    CHK(close(filedes[1]));
+
+    for(;;){
+        CHK(pid = wait(NULL));
+        if (pid == second){
+            break;
+        }
+    }
+    //Parent should only be here
+    //printf("Parent is done!\n");
+    PIPEFLAG = 0;
+
+
+}
+///Handles CD functionality
+void cdFlagHandler(){
+    //First condition: The only argument is CD
+    if (PROCESSEDWORDS == 0) {
+        if (DEBUGMODE == 1) printf("We've only got cd\n");
+        if (chdir(getenv("HOME")) == -1) fprintf(stderr, "Could not find home");
+    }
+        //Second condition: There are two arguments, one being CD
+    else if (PROCESSEDWORDS == 1) {
+        if (chdir(NEWARGV[0]) == -1) {//Checks if it is a full address
+            if (chdir(strcat(CWD, NEWARGV[0])) == -1) // Checks if we can branch from our cwd into the new dir
+                fprintf(stderr, "The directory: %s does not exist", NEWARGV[1]);
+            resetNEWARGV();
+        }
+    }
+        //Fail condition. there are more than 2 arguments
+    else {
+        if (DEBUGMODE == 1) printf("We done goofed");
+        fprintf(stderr, "cd accepts up to 1 argument, %d were found", PROCESSEDWORDS);
+    }
+    //Print current working dir
+    getcwd(CWD, STORAGE);
+    if (DEBUGMODE == 1) printf("\n%s\n", CWD);
+    CDFLAG = 0; // Lower the flag after processing
+}
+///Forks a child and executes a command
+void executeCommand(){
+    fflush(stdout);
+    fflush(stderr);
+    if (-1 == (kidpid = fork())) {
+        perror("Cannot Fork\n");
+        exit(-1);
+    } else if (kidpid == 0) {
+        //printf("1\n");
+
+        ///Executing a single command
+        redirectFile();
+        execvpFunct(0); // Regular execvp (Only if there is no pipe)
+
+        if (BACKGROUNDFLAG == 1) {
+//                if (dup2("/dev/null", STDOUT_FILENO) < 0) {
+//                    perror("Dup2 problem in OutDirect");
+//                    exit(-7);
+            // }
+            printf("%s[%ld]\n", NEWARGV[0], (long) getpid());
+        }
+    }  if (BACKGROUNDFLAG == 0) {
+        //We will wait for our background process to finish
+//            for(;;){
+//                pid_t pid;
+//                pid = wait(NULL);
+//                if (pid == second){
+//                    break;
+//                }
+//            }
+        while (wait(NULL) > 0);
+    }
+}
+///Debugging
 void debugPrintNewArgV() {
     printf("%s", NEWARGV[0]);
+}
+/// Resets dup2's, gets cwd, calls sighandler, prints prompt, and calls parse
+void promptAndParse(){
+    ///-Housekeeping-
+    dup2(STDIN_FILENO, STDIN_FILENO);
+    dup2(STDOUT_FILENO, STDOUT_FILENO);
+    getcwd(CWD, STORAGE); // Get cwd
+    (void) signal(SIGTERM, sigHandler); //Calls the sig handler
+
+    ///-Increment command and print parse-
+    comNum++;
+    printf("%%%d%% ", comNum);
+
+    ///-Parse and save state-
+    pReturn = parse();
+    copyState(comNum);
 }
 
 
@@ -222,6 +408,14 @@ int parse() {
                 memmove(OUTDIRECTFILE, s, c);
             }
         }
+            /// -| Pipeline-
+        else if(s[0] == '|'){
+            //Set the pipe flag to where in Newargv our null ptr is, add a null pointer to newargv, continue the loop
+            PROCESSEDWORDS++;
+            PIPEFLAG = PROCESSEDWORDS;
+            NEWARGV[PROCESSEDWORDS] = NULL;
+            continue;
+        }
             ///- & Background-
         else if (s[0] == '&') {
             //Check to see if the last word is an ampersand
@@ -247,162 +441,33 @@ int parse() {
 
 int main(int argc, char *argv[]) {
     ///Declarations & setup
-    int pReturn; //<- What parse returns
     //Necessary setup, including signal catcher and setpgid()
     setpgid(0, 0); //Set the page ID (0,0)
     getcwd(CWD, STORAGE); // Get cwd
 
     ///--Endless Loop--
     for (;;) {
-        ///-Issue Prompt-
-        dup2(STDIN_FILENO, STDIN_FILENO);
-        dup2(STDOUT_FILENO, STDOUT_FILENO);
-        getcwd(CWD, STORAGE); // Get cwd
-        (void) signal(SIGTERM, sigHandler); //Calls the sig handler
 
-        ///-Gather exit conditions, and parse a line of text-
-        printf("%%%d%% ", comNum);
-        comNum++;
-        //Checking for input, and passing that to parse if necessary
+        ///-Collect Command-
+        promptAndParse();
 
-        ///--p4 Getword functionality change--
-        //1. Check if there is an argument in newargv
-        //if there is, pass into parse that argument, and set a flag indicating that the argument has been processed
-        if (argc > 1 && ARGPROCESSED == 0) {
-            printf("ARGC ENTERED: arcgc = %d\n", argc);
-            ARGPROCESSED++; //Raise arg flag to avoid double processing
-        }
-        //2. Check if there is a bang command
-        //if there is, attempt to fetch the command
-        //if null, error
-        //3. If neither of the two, call getword and pass that into parse.
-
-        pReturn = parse(); //TODO: Change logic here to pass an argument to parse from main
-        copyState(comNum);
-        ///Checking for a trailing &
+        ///-Checking for exit condition-
         if (pReturn == -1 && size == 0) break;
 
-        ///-Checking for any raised flags-
+        ///-FLAGS-
+        ///-Pipeline Flag-
+        if (PIPEFLAG > 0) pipeFunction();
+        ///--CD FLAG--
+        if (CDFLAG != 0) cdFlagHandler();
 
-        ///--CDFLAG--
-        if (CDFLAG == 1) {
-            //First condition: The only argument is CD
-            if (PROCESSEDWORDS == 0) {
-                if (DEBUGMODE == 1) printf("We've only got cd\n");
-                if (chdir(getenv("HOME")) == -1) fprintf(stderr, "Could not find home");
-            }
-                //Second condition: There are two arguments, one being CD
-            else if (PROCESSEDWORDS == 1) {
-                if (chdir(NEWARGV[0]) == -1) {//Checks if it is a full address
-                    if (chdir(strcat(CWD, NEWARGV[0])) == -1) // Checks if we can branch from our cwd into the new dir
-                        fprintf(stderr, "The directory: %s does not exist", NEWARGV[1]);
-                    resetNEWARGV();
-                }
-            }
-                //Fail condition. there are more than 2 arguments
-            else {
-                if (DEBUGMODE == 1) printf("We done goofed");
-                fprintf(stderr, "cd accepts up to 1 argument, %d were found", PROCESSEDWORDS);
-            }
-            //Print current working dir
-            getcwd(CWD, STORAGE);
-            if (DEBUGMODE == 1) printf("\n%s\n", CWD);
-            CDFLAG = 0; // Lower the flag after processing
-        }
-        ///--FORK BEFORE HANDLING REDIRECTION--
-        fflush(stdout);
-        fflush(stderr);
-        if (-1 == (kidpid = fork())) {
-            perror("Cannot Fork\n");
-            exit(-1);
-        } else if (kidpid == 0) {
-            //printf("1\n");
-
-            /// - < FLAG -
-            if (INDIRECTFLAG == 1) {
-                int file;
-                if ((file = open(INDIRECTFILE, O_RDONLY, 0777)) < 0) {
-                    fprintf(stderr, "ERROR: UNABLE TO OPEN FILE %s", INDIRECTFILE);
-                    exit(-2); //TODO: Renumber exits
-                }
-                    //if (DEBUGMODE == 1) printf ("\nFileNum: %d",file);
-                    //if (DEBUGMODE == 1) printf("\nWe should have an old stdin: %d",stdin);
-                else if (dup2(file, STDIN_FILENO) < EXIT_SUCCESS) {
-                    perror("Dup2 Problem");
-                    exit(-2);
-                } // Redirecting STDIN
-
-                //if (DEBUGMODE == 1) printf("\nWe should have a new stdin: %d",stdin);
-                close(file);
-                INDIRECTFLAG = 0;
-
-
-            } else if (OUTDIRECTFLAG == 1) {
-                int ofile;
-                if (access(OUTDIRECTFILE, F_OK) == 0) fprintf(stderr, "%s: File exists", OUTDIRECTFILE);
-                else if ((ofile = open(OUTDIRECTFILE, O_RDWR | O_CREAT, 0777)) < 0) {
-                    fprintf(stderr, "ERROR: UNABLE TO OPEN FILE %s", OUTDIRECTFILE);
-                    exit(-3);
-                } else if (dup2(ofile, STDOUT_FILENO) < 0) {
-                    perror("Dup2 problem in OutDirect");
-                    exit(-4);
-                }
-                if (AMPERFLAG == 1) {
-                    printf("We've got a file: %s", OUTDIRECTFILE);
-                    if (dup2(ofile, STDERR_FILENO) < 0) {
-                        perror("Dup2 problem in err redirect");
-                        exit(-5);
-                    }
-                }
-                //printf("2\n");
-                close(ofile);
-                OUTDIRECTFLAG = 0;
-                AMPERFLAG = 0;
-
-            }
-
-            if (execvp(NEWARGV[0], NEWARGV) == -1) {
-                perror("execvp failed\n");
-                exit(-6);
-            }
-            if (BACKGROUNDFLAG == 1) {
-                if (dup2("/dev/null", STDOUT_FILENO) < 0) {
-                    perror("Dup2 problem in OutDirect");
-                    exit(-7);
-                }
-                printf("%s[%ld]\n", NEWARGV[0], (long) getpid());
-            }
-        } else if (BACKGROUNDFLAG == 0) {
-            //We will wait for our background process to finish
-//            for(;;){
-//                pid_t pid;
-//                pid = wait(NULL);
-//                if (pid == second){
-//                    break;
-//                }
-//            }
-            while (wait(NULL) > 0);
-        }
-        //printf("NEWARGV[0] = %s", NEWARGV[0]);
-
-
-
+        ///--Single Command Execution--
+        if (PIPEFLAG == 0) executeCommand();
 
         ///Final functions - Copying the contents into the "last" versions
-
-        //Copy the big storage into the lastbigstorage
-//        if (DEBUGMODE == 1) printf("Last big storage: %s", LASTBIGSTORAGE);
-//        if (DEBUGMODE == 1) printf("Current big storage: %s", BIGSTORAGE);
-
-        //Save and Clear storage
-        //copyState(comNum);
         resetStorage();
-
-
     }
-    //printf("p2 Terminated.\n");
+    ///-End of p2 Clean and Exit-
     killpg(getpgrp(), SIGTERM);
     exit(0);
-    //return 0;
 
 }

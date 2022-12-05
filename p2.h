@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <errno.h>
 #include "getword.h"
 #include "getword.c"
 #define MAXITEM 100 /* Max number of words per line */
